@@ -1,5 +1,6 @@
 import pytest
-from project import load_fasta, validate_dna, needleman_wunsch, detect_variants, translate_dna, classify_effects, CODON_TABLE
+from project import load_fasta, validate_dna, needleman_wunsch, detect_variants, translate_dna, classify_effects,summarize_results,write_report_csv, CODON_TABLE
+import csv
 
 
 def test_validate_dna_accepts_canonical_bases():
@@ -245,3 +246,58 @@ def test_classify_in_frame_deletion():
     assert result["effects"][0]["length_nt"] == 3
     assert result["reference_protein"] == "MPE"
     assert result["variant_protein"] == "ME"
+
+
+def test_summarize_results():
+    reference = "ATGGAACCTTGG"
+    variant = "ATGGTACCTTGG"
+    aligned_reference, aligned_variant, _ = needleman_wunsch(
+        reference, variant
+    )
+    variants = detect_variants(aligned_reference, aligned_variant)
+    effect_report = classify_effects(
+        reference, variant, variants
+    )
+    summary = summarize_results(variants, effect_report)
+    assert summary["total_detected_variants"] == 1
+    assert summary["variant_type_counts"] == {
+        "substitution": 1
+    }
+    assert summary["effect_counts"] == {
+        "missense": 1
+    }
+    assert summary["protein_changed"] is True
+
+
+def test_write_report_csv(tmp_path):
+    reference = "ATGGAACCTTGG"
+    variant = "ATGGTACCTTGG"
+    aligned_reference, aligned_variant, _ = needleman_wunsch(
+        reference, variant
+    )
+    variants = detect_variants(aligned_reference, aligned_variant)
+    effect_report = classify_effects(
+        reference, variant, variants
+    )
+    summary = summarize_results(variants, effect_report)
+    output_path = tmp_path / "analysis.csv"
+    write_report_csv(
+        output_path,
+        "reference",
+        "variant",
+        variants,
+        effect_report,
+        summary
+    )
+    with output_path.open(
+        newline="",
+        encoding="utf-8"
+    ) as file:
+        rows = list(csv.DictReader(file))
+    assert len(rows) == 1
+    assert rows[0]["reference_id"] == "reference"
+    assert rows[0]["variant_id"] == "variant"
+    assert rows[0]["effect"] == "missense"
+    assert rows[0]["reference_positions"] == "5"
+    assert rows[0]["reference_protein"] == "MEPW"
+    assert rows[0]["variant_protein"] == "MVPW"

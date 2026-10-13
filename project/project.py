@@ -1,4 +1,7 @@
 import sys
+import csv
+from collections import Counter
+from pathlib import Path
 
 
 CODON_TABLE = {
@@ -28,6 +31,46 @@ CODON_TABLE = {
     "GAT": "D", "GAC": "D", "GAA": "E", "GAG": "E",
     "GGT": "G", "GGC": "G", "GGA": "G", "GGG": "G"
 }
+
+
+REPORT_FIELDS = [
+    "reference_id",
+    "variant_id",
+    "reference_length_nt",
+    "variant_length_nt",
+    "net_length_change",
+    "net_frame_phase_preserved",
+    "reference_protein",
+    "variant_protein",
+    "protein_changed",
+    "total_detected_variants",
+    "variant_type_counts",
+    "total_classified_effects",
+    "effect_counts",
+    "variant_type",
+    "effect",
+    "codon_number",
+    "reference_codon",
+    "variant_codon",
+    "reference_amino_acid",
+    "variant_amino_acid",
+    "reference_positions",
+    "reference_position",
+    "variant_position",
+    "reference_base",
+    "variant_base",
+    "after_reference_position",
+    "variant_start",
+    "variant_end",
+    "inserted_sequence",
+    "reference_start",
+    "reference_end",
+    "before_variant_position",
+    "deleted_sequence",
+    "length_nt",
+    "notes",
+    "reason"
+]
 
 
 def load_fasta(path):
@@ -242,6 +285,91 @@ def classify_effects(reference_sequence, variant_sequence, variants):
     }
 
 
+def summarize_results(variants, effect_report):
+    variant_type_counts = dict(sorted(Counter(item["type"] for item in variants).items()))
+    effects = effect_report["effects"]
+    effect_counts = dict(sorted(Counter(item["effect"] for item in effects).items()))
+    return {
+        "total_detected_variants": len(variants),
+        "variant_type_counts": variant_type_counts,
+        "total_classified_effects": len(effects),
+        "effect_counts": effect_counts,
+        "protein_changed": effect_report["protein_changed"],
+        "net_length_change": effect_report["net_length_change"],
+        "net_frame_phase_preserved":
+            effect_report["net_frame_phase_preserved"]
+    }
+
+
+def write_report_csv(
+    output_path,
+    reference_id,
+    variant_id,
+    variants,
+    effect_report,
+    summary
+):
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    effects = effect_report["effects"]
+    if not effects:
+        effects = [{
+            "variant_type": "none",
+            "effect": "no_change"
+        }]
+    variant_counts_text = "; ".join(
+        f"{key}: {value}"
+        for key, value in summary["variant_type_counts"].items()
+    )
+    effect_counts_text = "; ".join(
+        f"{key}: {value}"
+        for key, value in summary["effect_counts"].items()
+    )
+    with output_path.open(
+        "w",
+        newline="",
+        encoding="utf-8"
+    ) as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=REPORT_FIELDS
+        )
+        writer.writeheader()
+        for effect in effects:
+            row = {
+                "reference_id": reference_id,
+                "variant_id": variant_id,
+                "reference_length_nt":
+                    effect_report["reference_length_nt"],
+                "variant_length_nt":
+                    effect_report["variant_length_nt"],
+                "net_length_change":
+                    summary["net_length_change"],
+                "net_frame_phase_preserved":
+                    summary["net_frame_phase_preserved"],
+                "reference_protein":
+                    effect_report["reference_protein"],
+                "variant_protein":
+                    effect_report["variant_protein"],
+                "protein_changed":
+                    effect_report["protein_changed"],
+                "total_detected_variants":
+                    summary["total_detected_variants"],
+                "variant_type_counts": variant_counts_text,
+                "total_classified_effects":
+                    summary["total_classified_effects"],
+                "effect_counts": effect_counts_text,
+                "notes": " | ".join(effect_report["notes"])
+            }
+            row.update(effect)
+            if isinstance(row.get("reference_positions"), list):
+                row["reference_positions"] = "; ".join(
+                    map(str, row["reference_positions"])
+                )
+            writer.writerow(row)
+    return output_path
+
+
 def needleman_wunsch(
     reference,
     variant,
@@ -397,9 +525,16 @@ def detect_variants(aligned_reference, aligned_variant):
 
 
 def main():
-    if len(sys.argv) != 3:
-        sys.exit("Usage: python project.py <reference.fasta> <variant.fasta>")
+    if len(sys.argv) not in (3, 4):
+        sys.exit("Usage: python project.py <reference.fasta> <variant.fasta> [report.csv]")
+    output_path = sys.argv[3] if len(sys.argv) == 4 else "analysis.csv"
     try:
+        input_paths = {
+            Path(sys.argv[1]).resolve(),
+            Path(sys.argv[2]).resolve()
+        }
+        if Path(output_path).resolve() in input_paths:
+            raise ValueError("Output report must not overwrite an input FASTA file.")
         reference_id, reference_sequence = load_fasta(sys.argv[1])
         variant_id, variant_sequence = load_fasta(sys.argv[2])
         reference_sequence = validate_dna(reference_sequence)
@@ -409,8 +544,17 @@ def main():
         aligned_reference, aligned_variant, score = needleman_wunsch(reference_sequence, variant_sequence)
         variants = detect_variants(aligned_reference, aligned_variant)
         effect_report = classify_effects(reference_sequence, variant_sequence, variants)
-        reference_protein = translate_dna(reference_sequence)
-        variant_protein = translate_dna(variant_sequence, allow_partial=True)
+        summary = summarize_results(variants, effect_report) 
+        report_path = write_report_csv(
+            output_path,
+            reference_id,
+            variant_id,
+            variants,
+            effect_report,
+            summary
+        )
+        # reference_protein = translate_dna(reference_sequence)
+        # variant_protein = translate_dna(variant_sequence, allow_partial=True)
     except FileNotFoundError as error:
         sys.exit(f"File not found: {error.filename}")
     except (OSError, ValueError) as error:
@@ -423,8 +567,6 @@ def main():
     print(f"Variant:   {aligned_variant}")
     print(f"Alignment score: {score}")
     print("\nDetected variants:")
-    print()
-    print("Detected variants:")
     if not variants:
         print("No differences detected.")
     else:
@@ -434,8 +576,8 @@ def main():
                 if key != "type":
                     print(f"  {key}: {value}")
     print("\nProtein translation:")
-    print(f"Reference protein: {reference_protein}")
-    print(f"Variant protein:   {variant_protein}")
+    # print(f"Reference protein: {reference_protein}")
+    # print(f"Variant protein:   {variant_protein}")
     print("\nProtein-level analysis:")
     print(f"Reference protein: {effect_report['reference_protein']}")
     print(f"Variant protein:   {effect_report['variant_protein']}")
@@ -455,6 +597,7 @@ def main():
         print("\nNotes:")
         for note in effect_report["notes"]:
             print(f"- {note}")
+    print(f"\nReport saved to: {report_path}")
 
 
 if __name__ == "__main__":
