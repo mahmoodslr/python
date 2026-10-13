@@ -1,5 +1,5 @@
 import pytest
-from project import load_fasta, validate_dna
+from project import load_fasta, validate_dna,needleman_wunsch
 
 
 def test_validate_dna_accepts_canonical_bases():
@@ -43,3 +43,36 @@ def test_load_fasta_rejects_multiple_records(tmp_path):
 
     with pytest.raises(ValueError, match="exactly one FASTA record"):
         load_fasta(path)
+
+
+
+def test_identical_sequences():
+    ref, var, score = needleman_wunsch("ACGT", "ACGT")
+
+    assert ref == "ACGT"
+    assert var == "ACGT"
+    assert score == 4
+
+
+def test_insertion():
+    ref, var, score = needleman_wunsch("ACGT", "ACTGT")
+
+    assert ref == "AC-GT"
+    assert var == "ACTGT"
+    assert score == 3
+
+
+def test_deletion():
+    ref, var, score = needleman_wunsch("ACTGT", "ACGT")
+
+    assert ref == "ACTGT"
+    assert var == "AC-GT"
+    assert score == 3
+
+
+def test_substitution():
+    ref, var, score = needleman_wunsch("ATG", "ATA")
+
+    assert ref == "ATG"
+    assert var == "ATA"
+    assert score == 1

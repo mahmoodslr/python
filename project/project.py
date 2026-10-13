@@ -39,10 +39,81 @@ def validate_dna(sequence):
     return sequence
 
 
+def needleman_wunsch(
+    reference,
+    variant,
+    match_score=1,
+    mismatch_score=-1,
+    gap_score=-1
+):
+    n = len(reference)
+    m = len(variant)
+    # 1. Create the scoring matrix.
+    matrix = [[0]* (m + 1) for _ in range(n + 1)]
+    # 2. Initialize the first column and row.
+    for i in range(1, n + 1):
+        matrix[i][0] = matrix[i - 1][0] + gap_score
+    for j in range(1, m + 1):
+        matrix[0][j] = matrix[0][j - 1] + gap_score
+    # 3. Calculate the best score for every cell.
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            if reference[i - 1] == variant[j - 1]:
+                substitution_score = match_score
+            else:
+                substitution_score = mismatch_score
+            diagonal = (
+                matrix[i - 1][j - 1] + substitution_score
+            )
+            up = matrix[i - 1][j] + gap_score
+            left = matrix[i][j - 1] + gap_score
+            matrix[i][j] = max(diagonal, up, left)
+    # 4. Reconstruct the alignment.
+    aligned_reference = []
+    aligned_variant = []
+    i = n
+    j = m
+    while i>0 or j>0:
+        if i>0 and j>0:
+            if reference[i - 1] == variant[j - 1]:
+                substitution_score = match_score
+            else:
+                substitution_score = mismatch_score
+            if matrix[i][j] == (
+                matrix[i - 1][j - 1] + substitution_score
+            ):
+                aligned_reference.append(reference[i - 1])
+                aligned_variant.append(variant[j - 1])
+                i -= 1
+                j -= 1
+                continue
+        if i > 0 and matrix[i][j] == (
+            matrix[i - 1][j] + gap_score
+        ):
+            aligned_reference.append(reference[i - 1])
+            aligned_variant.append("-")
+            i -= 1
+            continue
+        if j > 0 and matrix[i][j] == (
+            matrix[i][j - 1] + gap_score
+        ):
+            aligned_reference.append("-")
+            aligned_variant.append(variant[j - 1])
+            j -= 1
+            continue
+        raise RuntimeError("Could not reconstruct the alignment.")
+    aligned_reference.reverse()
+    aligned_variant.reverse()
+    return (
+        "".join(aligned_reference),
+        "".join(aligned_variant),
+        matrix[n][m]
+    )
+
 
 def main():
     if len(sys.argv) != 3:
-        sys.exit("Usage: python project.py, <reference.fasta> <variant.fasta>")
+        sys.exit("Usage: python project.py <reference.fasta> <variant.fasta>")
     try:
         reference_id, reference_sequence = load_fasta(sys.argv[1])
         variant_id, variant_sequence = load_fasta(sys.argv[2])
