@@ -46,6 +46,14 @@ def needleman_wunsch(
     mismatch_score=-1,
     gap_score=-1
 ):
+    if not isinstance(reference, str) or not isinstance(variant, str):
+        raise TypeError("Sequences must be strings.")
+    reference = reference.upper()
+    variant = variant.upper()
+    invalid_reference = set(reference) - set("ACGT")
+    invalid_variant = set(variant) - set("ACGT")
+    if invalid_reference or invalid_variant:
+        raise ValueError("Sequences must contain only A, C, G, and T.")
     n = len(reference)
     m = len(variant)
     # 1. Create the scoring matrix.
@@ -62,9 +70,7 @@ def needleman_wunsch(
                 substitution_score = match_score
             else:
                 substitution_score = mismatch_score
-            diagonal = (
-                matrix[i - 1][j - 1] + substitution_score
-            )
+            diagonal = matrix[i - 1][j - 1] + substitution_score
             up = matrix[i - 1][j] + gap_score
             left = matrix[i][j - 1] + gap_score
             matrix[i][j] = max(diagonal, up, left)
@@ -79,9 +85,7 @@ def needleman_wunsch(
                 substitution_score = match_score
             else:
                 substitution_score = mismatch_score
-            if matrix[i][j] == (
-                matrix[i - 1][j - 1] + substitution_score
-            ):
+            if matrix[i][j] == (matrix[i - 1][j - 1] + substitution_score):
                 aligned_reference.append(reference[i - 1])
                 aligned_variant.append(variant[j - 1])
                 i -= 1
@@ -111,6 +115,85 @@ def needleman_wunsch(
     )
 
 
+
+def detect_variants(aligned_reference, aligned_variant):
+    if not isinstance(aligned_reference, str) or not isinstance(aligned_variant, str):
+        raise TypeError("Aligned sequences must be strings.")
+    aligned_reference = aligned_reference.upper()
+    aligned_variant = aligned_variant.upper()
+    if len(aligned_reference) != len(aligned_variant):
+        raise ValueError("Aligned sequences must have equal lengths.")
+    allowed_symbols = set("ACGT-")
+    invalid_symbols = (set(aligned_reference) | set(aligned_variant)) - allowed_symbols
+    if invalid_symbols:
+        symbols = ", ".join(sorted(invalid_symbols))
+        raise ValueError(f"Invalid alignment symbols: {symbols}")
+    if any(ref == "-" and var == "-" for ref, var in zip(aligned_reference, aligned_variant)):
+        raise ValueError("An alignment column cannot contain two gaps.")
+    variants = []
+    reference_position = 0
+    variant_position = 0
+    i = 0
+    while i < len(aligned_reference):
+        ref = aligned_reference[i]
+        var = aligned_variant[i]
+        # Case 1: Insertion relative to the reference.
+        if ref == "-":
+            insertion_after_reference = reference_position
+            variant_start = variant_position + 1
+            inserted_bases = []
+            while (
+                i < len(aligned_reference)
+                and aligned_reference[i] == "-"
+                and aligned_variant[i] != "-"
+            ):
+                inserted_bases.append(aligned_variant[i])
+                variant_position += 1
+                i += 1
+            variants.append({
+                "type": "insertion",
+                "after_reference_position": insertion_after_reference,
+                "variant_start": variant_start,
+                "variant_end": variant_position,
+                "inserted_sequence": "".join(inserted_bases)
+            })
+        # Case 2: Deletion relative to the reference.
+        elif var == "-":
+            reference_start = reference_position + 1
+            variant_boundary = variant_position
+            deleted_bases = []
+            while (
+                i < len(aligned_reference)
+                and aligned_reference[i] != "-"
+                and aligned_variant[i] == "-"
+            ):
+                deleted_bases.append(aligned_reference[i])
+                reference_position += 1
+                i += 1
+
+            variants.append({
+                "type": "deletion",
+                "reference_start": reference_start,
+                "reference_end": reference_position,
+                "before_variant_position": variant_boundary,
+                "deleted_sequence": "".join(deleted_bases)
+            })
+        # Case 3: Both sequences have a nucleotide.
+        else:
+            reference_position += 1
+            variant_position += 1
+            if ref != var:
+                variants.append({
+                    "type": "substitution",
+                    "reference_position": reference_position,
+                    "variant_position": variant_position,
+                    "reference_base": ref,
+                    "variant_base": var
+                })
+            i += 1
+    return variants
+
+
 def main():
     if len(sys.argv) != 3:
         sys.exit("Usage: python project.py <reference.fasta> <variant.fasta>")
@@ -121,15 +204,30 @@ def main():
         variant_sequence = validate_dna(variant_sequence)
         if len(reference_sequence) % 3 != 0:
             raise ValueError("Reference coding sequence length must be a multiple of 3.")
+        aligned_reference, aligned_variant, score = needleman_wunsch(reference_sequence, variant_sequence)
+        variants = detect_variants(aligned_reference, aligned_variant)
     except FileNotFoundError as error:
         sys.exit(f"File not found: {error.filename}")
     except (OSError, ValueError) as error:
         sys.exit(f"Input error: {error}")
-
-    print("MutationScope - Input Validation")
+    print("MutationScope - Sequence Analysis")
     print(f"Reference: {reference_id} ({len(reference_sequence)} nt)")
     print(f"Variant: {variant_id} ({len(variant_sequence)} nt)")
-    print("Both DNA sequences passed basic validation.")
+    print("\nAlignment:")
+    print(f"Reference: {aligned_reference}")
+    print(f"Variant:   {aligned_variant}")
+    print(f"Alignment score: {score}")
+    print("\nDetected variants:")
+    print()
+    print("Detected variants:")
+    if not variants:
+        print("No differences detected.")
+    else:
+        for number, variant in enumerate(variants, start=1):
+            print(f"\nVariant {number}: {variant['type']}")
+            for key, value in variant.items():
+                if key != "type":
+                    print(f"  {key}: {value}")
 
 
 if __name__ == "__main__":

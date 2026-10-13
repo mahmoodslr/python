@@ -1,6 +1,5 @@
 import pytest
-from project import load_fasta, validate_dna,needleman_wunsch
-
+from project import load_fasta, validate_dna, needleman_wunsch, detect_variants
 
 def test_validate_dna_accepts_canonical_bases():
     assert validate_dna("atgc") == "ATGC"
@@ -40,15 +39,12 @@ def test_load_fasta_rejects_multiple_records(tmp_path):
         ">reference\nATG\n>variant\nGAA\n",
         encoding="utf-8"
     )
-
     with pytest.raises(ValueError, match="exactly one FASTA record"):
         load_fasta(path)
 
 
-
 def test_identical_sequences():
     ref, var, score = needleman_wunsch("ACGT", "ACGT")
-
     assert ref == "ACGT"
     assert var == "ACGT"
     assert score == 4
@@ -56,7 +52,6 @@ def test_identical_sequences():
 
 def test_insertion():
     ref, var, score = needleman_wunsch("ACGT", "ACTGT")
-
     assert ref == "AC-GT"
     assert var == "ACTGT"
     assert score == 3
@@ -72,7 +67,79 @@ def test_deletion():
 
 def test_substitution():
     ref, var, score = needleman_wunsch("ATG", "ATA")
-
     assert ref == "ATG"
     assert var == "ATA"
     assert score == 1
+
+
+def test_detect_variants_no_change():
+    assert detect_variants("ACGT", "ACGT") == []
+
+
+def test_detect_variants_substitution():
+    result = detect_variants("ATG", "ATA")
+    assert result == [{
+        "type": "substitution",
+        "reference_position": 3,
+        "variant_position": 3,
+        "reference_base": "G",
+        "variant_base": "A"
+    }]
+
+
+def test_detect_variants_insertion():
+    result = detect_variants("AC-GT", "ACTGT")
+    assert result == [{
+        "type": "insertion",
+        "after_reference_position": 2,
+        "variant_start": 3,
+        "variant_end": 3,
+        "inserted_sequence": "T"
+    }]
+
+
+def test_detect_variants_deletion():
+    result = detect_variants("ACTTGT", "AC--GT")
+    assert result == [{
+        "type": "deletion",
+        "reference_start": 3,
+        "reference_end": 4,
+        "before_variant_position": 2,
+        "deleted_sequence": "TT"
+    }]
+
+
+def test_detect_variants_rejects_unequal_alignment_lengths():
+    with pytest.raises(ValueError, match="equal lengths"):
+        detect_variants("ACGT", "ACG")
+
+
+def test_detect_variants_rejects_invalid_symbols():
+    with pytest.raises(ValueError, match="Invalid alignment symbols"):
+        detect_variants("ACXT", "ACGT")
+
+
+def test_detect_variants_rejects_double_gap():
+    with pytest.raises(ValueError, match="two gaps"):
+        detect_variants("A-C", "A-C")
+
+
+def test_reference_variant_workflow():
+    reference = "ATGGAACCTTGG"
+    variant = "ATGGTACCTTGG"
+    aligned_reference, aligned_variant, score = needleman_wunsch(
+        reference, variant
+    )
+    variants = detect_variants(aligned_reference, aligned_variant)
+    assert aligned_reference == reference
+    assert aligned_variant == variant
+    assert score == 10
+    assert variants == [
+        {
+            "type": "substitution",
+            "reference_position": 5,
+            "variant_position": 5,
+            "reference_base": "A",
+            "variant_base": "T"
+        }
+    ]
