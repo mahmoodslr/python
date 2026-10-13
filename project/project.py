@@ -1,6 +1,35 @@
 import sys
 
 
+CODON_TABLE = {
+    # Phenylalanine, Leucine
+    "TTT": "F", "TTC": "F", "TTA": "L", "TTG": "L",
+
+    # Serine, Tyrosine, Stop, Cysteine, Tryptophan
+    "TCT": "S", "TCC": "S", "TCA": "S", "TCG": "S",
+    "TAT": "Y", "TAC": "Y", "TAA": "*", "TAG": "*",
+    "TGT": "C", "TGC": "C", "TGA": "*", "TGG": "W",
+
+    # Leucine, Proline, Histidine, Glutamine, Arginine
+    "CTT": "L", "CTC": "L", "CTA": "L", "CTG": "L",
+    "CCT": "P", "CCC": "P", "CCA": "P", "CCG": "P",
+    "CAT": "H", "CAC": "H", "CAA": "Q", "CAG": "Q",
+    "CGT": "R", "CGC": "R", "CGA": "R", "CGG": "R",
+
+    # Isoleucine, Methionine, Threonine, Asparagine, Lysine
+    "ATT": "I", "ATC": "I", "ATA": "I", "ATG": "M",
+    "ACT": "T", "ACC": "T", "ACA": "T", "ACG": "T",
+    "AAT": "N", "AAC": "N", "AAA": "K", "AAG": "K",
+    "AGT": "S", "AGC": "S", "AGA": "R", "AGG": "R",
+
+    # Valine, Alanine, Aspartic acid, Glutamic acid, Glycine
+    "GTT": "V", "GTC": "V", "GTA": "V", "GTG": "V",
+    "GCT": "A", "GCC": "A", "GCA": "A", "GCG": "A",
+    "GAT": "D", "GAC": "D", "GAA": "E", "GAG": "E",
+    "GGT": "G", "GGC": "G", "GGA": "G", "GGG": "G"
+}
+
+
 def load_fasta(path):
     identifier= None
     sequence_parts= []
@@ -37,6 +66,180 @@ def validate_dna(sequence):
         symbols = ", ".join(repr(symbol) for symbol in invalid_symbols)
         raise ValueError(f"Invalid DNA symbol(s): {symbols}")
     return sequence
+
+
+def translate_dna(sequence, *, allow_partial=False):
+    sequence = validate_dna(sequence)
+    remainder = len(sequence) % 3
+    if remainder and not allow_partial:
+        raise ValueError("DNA sequence length must be a multiple of 3.")
+    complete_length = len(sequence) - remainder
+    protein = []
+    for i in range(0, complete_length, 3):
+        codon = sequence[i:i + 3]
+        amino_acid = CODON_TABLE[codon]
+        protein.append(amino_acid)
+        if amino_acid == "*":
+            break
+    return "".join(protein)
+
+
+def classify_effects(reference_sequence, variant_sequence, variants):
+    reference_sequence = validate_dna(reference_sequence)
+    variant_sequence = validate_dna(variant_sequence)
+    if len(reference_sequence) % 3 != 0:
+        raise ValueError(
+            "Reference coding sequence length must be a multiple of 3."
+        )
+    if not isinstance(variants, list):
+        raise TypeError("variants must be a list.")
+    known_types = {"substitution", "insertion", "deletion"}
+    for variant in variants:
+        if not isinstance(variant, dict):
+            raise TypeError("Each variant must be a dictionary.")
+        if variant.get("type") not in known_types:
+            raise ValueError("Unknown variant type.")
+    reference_protein = translate_dna(reference_sequence)
+    variant_protein = translate_dna(
+        variant_sequence,
+        allow_partial=True
+    )
+    has_indels = any(
+        variant["type"] in {"insertion", "deletion"}
+        for variant in variants
+    )
+    effects = []
+    notes = []
+    # Case 1: substitutions without insertions or deletions.
+    if not has_indels:
+        if len(reference_sequence) != len(variant_sequence):
+            raise ValueError(
+                "Different sequence lengths require insertion "
+                "or deletion events."
+            )
+        codons_affected = {}
+        for variant in variants:
+            if variant["type"] != "substitution":
+                continue
+            position = variant["reference_position"]
+            codon_number = (position - 1) // 3 + 1
+            codons_affected.setdefault(
+                codon_number, []
+            ).append(variant)
+        for codon_number, codon_variants in sorted(
+            codons_affected.items()
+        ):
+            start = (codon_number - 1) * 3
+            end = start + 3
+            reference_codon = reference_sequence[start:end]
+            variant_codon = variant_sequence[start:end]
+            if (
+                len(reference_codon) != 3
+                or len(variant_codon) != 3
+            ):
+                raise ValueError(
+                    "Affected codon is incomplete."
+                )
+            reference_aa = CODON_TABLE[reference_codon]
+            variant_aa = CODON_TABLE[variant_codon]
+            if reference_aa == "*" and variant_aa == "*":
+                effect = "stop_retained"
+            elif reference_aa != "*" and variant_aa == "*":
+                effect = "nonsense"
+            elif reference_aa == "*" and variant_aa != "*":
+                effect = "stop_loss"
+            elif reference_aa == variant_aa:
+                effect = "synonymous"
+            else:
+                effect = "missense"
+            effects.append({
+                "variant_type": "substitution",
+                "effect": effect,
+                "codon_number": codon_number,
+                "reference_codon": reference_codon,
+                "variant_codon": variant_codon,
+                "reference_amino_acid": reference_aa,
+                "variant_amino_acid": variant_aa,
+                "reference_positions": [
+                    item["reference_position"]
+                    for item in codon_variants
+                ]
+            })
+    # Case 2: insertions or deletions are present.
+    else:
+        for variant in variants:
+            if variant["type"] == "insertion":
+                inserted_sequence = variant["inserted_sequence"]
+                length = len(inserted_sequence)
+                effect = (
+                    "frameshift_insertion"
+                    if length % 3 != 0
+                    else "in_frame_insertion"
+                )
+                effects.append({
+                    "variant_type": "insertion",
+                    "effect": effect,
+                    "length_nt": length,
+                    "inserted_sequence": inserted_sequence,
+                    "after_reference_position":
+                        variant["after_reference_position"]
+                })
+            elif variant["type"] == "deletion":
+                deleted_sequence = variant["deleted_sequence"]
+                length = len(deleted_sequence)
+                effect = (
+                    "frameshift_deletion"
+                    if length % 3 != 0
+                    else "in_frame_deletion"
+                )
+                effects.append({
+                    "variant_type": "deletion",
+                    "effect": effect,
+                    "length_nt": length,
+                    "deleted_sequence": deleted_sequence,
+                    "reference_start": variant["reference_start"],
+                    "reference_end": variant["reference_end"]
+                })
+            else:
+                effects.append({
+                    "variant_type": "substitution",
+                    "effect": "requires_contextual_analysis",
+                    "reference_position":
+                        variant["reference_position"],
+                    "reason": (
+                        "Substitution consequences are not "
+                        "classified independently when indels "
+                        "are present."
+                    )
+                })
+        notes.append(
+            "Indels can alter the reading frame. Interpret "
+            "protein-level differences using the full sequences."
+        )
+        notes.append(
+            "The net length change alone does not reveal whether "
+            "a temporary frameshift occurred between multiple indels."
+        )
+    if len(variant_sequence) % 3:
+        notes.append(
+            f"The variant ends with {len(variant_sequence) % 3} "
+            "untranslated nucleotide(s) outside a complete codon."
+        )
+    return {
+        "reference_protein": reference_protein,
+        "variant_protein": variant_protein,
+        "protein_changed": reference_protein != variant_protein,
+        "reference_length_nt": len(reference_sequence),
+        "variant_length_nt": len(variant_sequence),
+        "net_length_change": (
+            len(variant_sequence) - len(reference_sequence)
+        ),
+        "net_frame_phase_preserved": (
+            (len(variant_sequence) - len(reference_sequence)) % 3 == 0
+        ),
+        "effects": effects,
+        "notes": notes
+    }
 
 
 def needleman_wunsch(
@@ -113,7 +316,6 @@ def needleman_wunsch(
         "".join(aligned_variant),
         matrix[n][m]
     )
-
 
 
 def detect_variants(aligned_reference, aligned_variant):
@@ -206,6 +408,9 @@ def main():
             raise ValueError("Reference coding sequence length must be a multiple of 3.")
         aligned_reference, aligned_variant, score = needleman_wunsch(reference_sequence, variant_sequence)
         variants = detect_variants(aligned_reference, aligned_variant)
+        effect_report = classify_effects(reference_sequence, variant_sequence, variants)
+        reference_protein = translate_dna(reference_sequence)
+        variant_protein = translate_dna(variant_sequence, allow_partial=True)
     except FileNotFoundError as error:
         sys.exit(f"File not found: {error.filename}")
     except (OSError, ValueError) as error:
@@ -228,6 +433,28 @@ def main():
             for key, value in variant.items():
                 if key != "type":
                     print(f"  {key}: {value}")
+    print("\nProtein translation:")
+    print(f"Reference protein: {reference_protein}")
+    print(f"Variant protein:   {variant_protein}")
+    print("\nProtein-level analysis:")
+    print(f"Reference protein: {effect_report['reference_protein']}")
+    print(f"Variant protein:   {effect_report['variant_protein']}")
+    print(f"Protein changed:   {effect_report['protein_changed']}")
+    print("\nEffect classification:")
+    if not effect_report["effects"]:
+        print("No coding effects identified.")
+    else:
+        for number, effect in enumerate(
+            effect_report["effects"], start=1
+        ):
+            print(f"\nEffect {number}: {effect['effect']}")
+            for key, value in effect.items():
+                if key != "effect":
+                    print(f"  {key}: {value}")
+    if effect_report["notes"]:
+        print("\nNotes:")
+        for note in effect_report["notes"]:
+            print(f"- {note}")
 
 
 if __name__ == "__main__":

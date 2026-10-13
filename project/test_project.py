@@ -1,5 +1,6 @@
 import pytest
-from project import load_fasta, validate_dna, needleman_wunsch, detect_variants
+from project import load_fasta, validate_dna, needleman_wunsch, detect_variants, translate_dna, classify_effects, CODON_TABLE
+
 
 def test_validate_dna_accepts_canonical_bases():
     assert validate_dna("atgc") == "ATGC"
@@ -143,3 +144,104 @@ def test_reference_variant_workflow():
             "variant_base": "T"
         }
     ]
+
+
+def test_codon_table_has_64_codons():
+    assert len(CODON_TABLE) == 64
+
+
+def test_translate_reference_sequence():
+    assert translate_dna("ATGGAACCTTGG") == "MEPW"
+
+
+def test_translate_variant_sequence():
+    assert translate_dna("ATGGTACCTTGG") == "MVPW"
+
+
+def test_translate_stops_at_first_stop():
+    assert translate_dna("ATGTAAACG") == "M*"
+
+
+def test_translate_rejects_incomplete_sequence():
+    with pytest.raises(ValueError, match="multiple of 3"):
+        translate_dna("ATGG")
+
+
+def test_translate_allows_incomplete_terminal_codon():
+    assert translate_dna("ATGG", allow_partial=True) == "M"
+
+
+def analyze_pair(reference, variant):
+    aligned_reference, aligned_variant, _ = needleman_wunsch(
+        reference, variant
+    )
+    variants = detect_variants(
+        aligned_reference, aligned_variant
+    )
+    return classify_effects(reference, variant, variants)
+
+
+def test_classify_synonymous():
+    result = analyze_pair("ATGGAACCTTGG", "ATGGAGCCTTGG")
+    assert result["reference_protein"] == "MEPW"
+    assert result["variant_protein"] == "MEPW"
+    assert result["protein_changed"] is False
+    assert result["effects"][0]["effect"] == "synonymous"
+
+
+def test_classify_missense():
+    result = analyze_pair("ATGGAACCTTGG", "ATGGTACCTTGG")
+    assert result["reference_protein"] == "MEPW"
+    assert result["variant_protein"] == "MVPW"
+    assert result["protein_changed"] is True
+    assert result["effects"][0]["effect"] == "missense"
+
+
+def test_classify_nonsense():
+    result = analyze_pair("ATGGAACCTTGG", "ATGTAACCTTGG")
+    assert result["reference_protein"] == "MEPW"
+    assert result["variant_protein"] == "M*"
+    assert result["effects"][0]["effect"] == "nonsense"
+
+
+def test_classify_stop_loss():
+    result = analyze_pair("ATGTAA", "ATGCAA")
+    assert result["reference_protein"] == "M*"
+    assert result["variant_protein"] == "MQ"
+    assert result["effects"][0]["effect"] == "stop_loss"
+
+
+def test_classify_stop_retained():
+    result = analyze_pair("ATGTAA", "ATGTAG")
+    assert result["reference_protein"] == "M*"
+    assert result["variant_protein"] == "M*"
+    assert result["effects"][0]["effect"] == "stop_retained"
+
+
+def test_classify_frameshift_insertion():
+    reference = "ATGGAACCTTGG"
+    variant = "ATGAGAACCTTGG"
+    aligned_reference = "ATG-GAACCTTGG"
+    aligned_variant = "ATGAGAACCTTGG"
+    variants = detect_variants(
+        aligned_reference, aligned_variant
+    )
+    result = classify_effects(reference, variant, variants)
+    assert result["effects"][0]["effect"] == "frameshift_insertion"
+    assert result["effects"][0]["length_nt"] == 1
+    assert result["protein_changed"] is True
+
+
+def test_classify_in_frame_deletion():
+    reference = "ATGCCCGAA"
+    variant = "ATGGAA"
+    aligned_reference = "ATGCCCGAA"
+    aligned_variant = "ATG---GAA"
+    variants = detect_variants(
+        aligned_reference, aligned_variant
+    )
+    result = classify_effects(reference, variant, variants)
+    assert result["effects"][0]["effect"] == "in_frame_deletion"
+    assert result["effects"][0]["length_nt"] == 3
+    assert result["reference_protein"] == "MPE"
+    assert result["variant_protein"] == "ME"
