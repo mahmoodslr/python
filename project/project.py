@@ -69,6 +69,12 @@ REPORT_FIELDS = [
     "deleted_sequence",
     "length_nt",
     "notes",
+    "variant_codon_number",
+    "variant_positions",
+    "cumulative_frame_offset_before_nt",
+    "cumulative_frame_offset_after_nt",
+    "frame_phase_after_event",
+    "frame_restored_after_event",
     "reason"
 ]
 
@@ -127,6 +133,7 @@ def translate_dna(sequence, *, allow_partial=False):
     return "".join(protein)
 
 
+
 def classify_effects(reference_sequence, variant_sequence, variants):
     reference_sequence = validate_dna(reference_sequence)
     variant_sequence = validate_dna(variant_sequence)
@@ -142,47 +149,63 @@ def classify_effects(reference_sequence, variant_sequence, variants):
             raise TypeError("Each variant must be a dictionary.")
         if variant.get("type") not in known_types:
             raise ValueError("Unknown variant type.")
+    has_indels = any(
+        variant["type"] in {"insertion", "deletion"}
+        for variant in variants
+    )
+    if not has_indels and len(reference_sequence) != len(variant_sequence):
+        raise ValueError(
+            "Different sequence lengths require insertion or deletion events."
+        )
     reference_protein = translate_dna(reference_sequence)
     variant_protein = translate_dna(
         variant_sequence,
         allow_partial=True
     )
-    has_indels = any(
-        variant["type"] in {"insertion", "deletion"}
-        for variant in variants
-    )
     effects = []
     notes = []
-    # Case 1: substitutions without insertions or deletions.
-    if not has_indels:
-        if len(reference_sequence) != len(variant_sequence):
-            raise ValueError(
-                "Different sequence lengths require insertion "
-                "or deletion events."
-            )
-        codons_affected = {}
-        for variant in variants:
-            if variant["type"] != "substitution":
-                continue
-            position = variant["reference_position"]
-            codon_number = (position - 1) // 3 + 1
-            codons_affected.setdefault(
-                codon_number, []
-            ).append(variant)
-        for codon_number, codon_variants in sorted(
-            codons_affected.items()
-        ):
-            start = (codon_number - 1) * 3
-            end = start + 3
-            reference_codon = reference_sequence[start:end]
-            variant_codon = variant_sequence[start:end]
-            if (
-                len(reference_codon) != 3
-                or len(variant_codon) != 3
+    frame_offset = 0
+    ever_shifted = False
+    contextual_substitution_found = False
+    substitution_groups = {}
+    for variant in variants:
+        variant_type = variant["type"]
+        if variant_type == "substitution":
+            reference_position = variant["reference_position"]
+            variant_position = variant["variant_position"]
+            if not (
+                1 <= reference_position <= len(reference_sequence)
+                and 1 <= variant_position <= len(variant_sequence)
             ):
-                raise ValueError(
-                    "Affected codon is incomplete."
-                )
+                raise ValueError("Substitution position is out of range.")
+            if frame_offset % 3 != 0:
+                effects.append({
+                    "variant_type": "substitution",
+                    "effect": "requires_contextual_analysis",
+                    "reference_position": reference_position,
+                    "variant_position": variant_position,
+                    "reference_base": variant["reference_base"],
+                    "variant_base": variant["variant_base"],
+                    "cumulative_frame_offset_before_nt": frame_offset,
+                    "reason": (
+                        "A preceding indel has shifted the reading frame; "
+                        "the substitution needs contextual analysis."
+                    )
+                })
+                contextual_substitution_found = True
+                continue
+            reference_codon_number = (reference_position - 1) // 3 + 1
+            variant_codon_number = (variant_position - 1) // 3 + 1
+            reference_start = (reference_codon_number - 1) * 3
+            variant_start = (variant_codon_number - 1) * 3
+            reference_codon = reference_sequence[
+                reference_start:reference_start + 3
+            ]
+            variant_codon = variant_sequence[
+                variant_start:variant_start + 3
+            ]
+            if len(reference_codon) != 3 or len(variant_codon) != 3:
+                raise ValueError("Affected codon is incomplete.")
             reference_aa = CODON_TABLE[reference_codon]
             variant_aa = CODON_TABLE[variant_codon]
             if reference_aa == "*" and variant_aa == "*":
@@ -195,73 +218,114 @@ def classify_effects(reference_sequence, variant_sequence, variants):
                 effect = "synonymous"
             else:
                 effect = "missense"
-            effects.append({
-                "variant_type": "substitution",
-                "effect": effect,
-                "codon_number": codon_number,
-                "reference_codon": reference_codon,
-                "variant_codon": variant_codon,
-                "reference_amino_acid": reference_aa,
-                "variant_amino_acid": variant_aa,
-                "reference_positions": [
-                    item["reference_position"]
-                    for item in codon_variants
-                ]
-            })
-    # Case 2: insertions or deletions are present.
-    else:
-        for variant in variants:
-            if variant["type"] == "insertion":
-                inserted_sequence = variant["inserted_sequence"]
-                length = len(inserted_sequence)
-                effect = (
-                    "frameshift_insertion"
-                    if length % 3 != 0
-                    else "in_frame_insertion"
-                )
-                effects.append({
-                    "variant_type": "insertion",
-                    "effect": effect,
-                    "length_nt": length,
-                    "inserted_sequence": inserted_sequence,
-                    "after_reference_position":
-                        variant["after_reference_position"]
-                })
-            elif variant["type"] == "deletion":
-                deleted_sequence = variant["deleted_sequence"]
-                length = len(deleted_sequence)
-                effect = (
-                    "frameshift_deletion"
-                    if length % 3 != 0
-                    else "in_frame_deletion"
-                )
-                effects.append({
-                    "variant_type": "deletion",
-                    "effect": effect,
-                    "length_nt": length,
-                    "deleted_sequence": deleted_sequence,
-                    "reference_start": variant["reference_start"],
-                    "reference_end": variant["reference_end"]
-                })
-            else:
-                effects.append({
+            group_key = (
+                reference_codon_number,
+                variant_codon_number
+            )
+            if group_key not in substitution_groups:
+                substitution_effect = {
                     "variant_type": "substitution",
-                    "effect": "requires_contextual_analysis",
-                    "reference_position":
-                        variant["reference_position"],
-                    "reason": (
-                        "Substitution consequences are not "
-                        "classified independently when indels "
-                        "are present."
-                    )
-                })
-        notes.append(
-            "Indels can alter the reading frame. Interpret "
-            "protein-level differences using the full sequences."
+                    "effect": effect,
+                    "codon_number": reference_codon_number,
+                    "variant_codon_number": variant_codon_number,
+                    "reference_codon": reference_codon,
+                    "variant_codon": variant_codon,
+                    "reference_amino_acid": reference_aa,
+                    "variant_amino_acid": variant_aa,
+                    "reference_positions": [],
+                    "variant_positions": []
+                }
+                substitution_groups[group_key] = substitution_effect
+                effects.append(substitution_effect)
+            substitution_groups[group_key]["reference_positions"].append(
+                reference_position
+            )
+            substitution_groups[group_key]["variant_positions"].append(
+                variant_position
+            )
+        elif variant_type == "insertion":
+            inserted_sequence = variant["inserted_sequence"]
+            length = len(inserted_sequence)
+            offset_before = frame_offset
+            frame_offset += length
+            offset_after = frame_offset
+            if offset_before % 3 != 0 or offset_after % 3 != 0:
+                ever_shifted = True
+            effect = (
+                "frameshift_insertion"
+                if length % 3 != 0
+                else "in_frame_insertion"
+            )
+            effects.append({
+                "variant_type": "insertion",
+                "effect": effect,
+                "length_nt": length,
+                "after_reference_position":
+                    variant["after_reference_position"],
+                "variant_start": variant["variant_start"],
+                "variant_end": variant["variant_end"],
+                "inserted_sequence": inserted_sequence,
+                "cumulative_frame_offset_before_nt": offset_before,
+                "cumulative_frame_offset_after_nt": offset_after,
+                "frame_phase_after_event": offset_after % 3,
+                "frame_restored_after_event": (
+                    offset_before % 3 != 0
+                    and offset_after % 3 == 0
+                )
+            })
+        elif variant_type == "deletion":
+            deleted_sequence = variant["deleted_sequence"]
+            length = len(deleted_sequence)
+            offset_before = frame_offset
+            frame_offset -= length
+            offset_after = frame_offset
+            if offset_before % 3 != 0 or offset_after % 3 != 0:
+                ever_shifted = True
+            effect = (
+                "frameshift_deletion"
+                if length % 3 != 0
+                else "in_frame_deletion"
+            )
+            effects.append({
+                "variant_type": "deletion",
+                "effect": effect,
+                "length_nt": length,
+                "reference_start": variant["reference_start"],
+                "reference_end": variant["reference_end"],
+                "before_variant_position":
+                    variant["before_variant_position"],
+                "deleted_sequence": deleted_sequence,
+                "cumulative_frame_offset_before_nt": offset_before,
+                "cumulative_frame_offset_after_nt": offset_after,
+                "frame_phase_after_event": offset_after % 3,
+                "frame_restored_after_event": (
+                    offset_before % 3 != 0
+                    and offset_after % 3 == 0
+                )
+            })
+    net_length_change = len(variant_sequence) - len(reference_sequence)
+    if frame_offset != net_length_change:
+        raise ValueError(
+            "Variant events do not match the sequence length difference."
         )
+    if has_indels:
         notes.append(
-            "The net length change alone does not reveal whether "
-            "a temporary frameshift occurred between multiple indels."
+            "Indel labels reflect each event's length. Cumulative frame "
+            "offset fields show whether the reading frame remains shifted."
+        )
+    if ever_shifted and frame_offset % 3 == 0:
+        notes.append(
+            "A temporary frameshift occurred, but a later indel restored "
+            "the reading-frame phase."
+        )
+    elif frame_offset % 3 != 0:
+        notes.append(
+            "The final sequence length leaves the reading-frame phase shifted."
+        )
+    if contextual_substitution_found:
+        notes.append(
+            "Substitutions occurring during a shifted reading frame need "
+            "contextual protein-level interpretation."
         )
     if len(variant_sequence) % 3:
         notes.append(
@@ -274,12 +338,8 @@ def classify_effects(reference_sequence, variant_sequence, variants):
         "protein_changed": reference_protein != variant_protein,
         "reference_length_nt": len(reference_sequence),
         "variant_length_nt": len(variant_sequence),
-        "net_length_change": (
-            len(variant_sequence) - len(reference_sequence)
-        ),
-        "net_frame_phase_preserved": (
-            (len(variant_sequence) - len(reference_sequence)) % 3 == 0
-        ),
+        "net_length_change": net_length_change,
+        "net_frame_phase_preserved": net_length_change % 3 == 0,
         "effects": effects,
         "notes": notes
     }
@@ -301,6 +361,7 @@ def summarize_results(variants, effect_report):
     }
 
 
+
 def write_report_csv(
     output_path,
     reference_id,
@@ -312,11 +373,6 @@ def write_report_csv(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     effects = effect_report["effects"]
-    if not effects:
-        effects = [{
-            "variant_type": "none",
-            "effect": "no_change"
-        }]
     variant_counts_text = "; ".join(
         f"{key}: {value}"
         for key, value in summary["variant_type_counts"].items()
@@ -325,6 +381,63 @@ def write_report_csv(
         f"{key}: {value}"
         for key, value in summary["effect_counts"].items()
     )
+    def effect_matches_variant(effect, variant):
+        """Return True if an effect describes the given raw variant."""
+        if effect.get("variant_type") != variant.get("type"):
+            return False
+        variant_type = variant["type"]
+        if variant_type == "substitution":
+            reference_positions = effect.get(
+                "reference_positions", []
+            )
+            variant_positions = effect.get(
+                "variant_positions", []
+            )
+            if any(
+                ref_pos == variant.get("reference_position")
+                and var_pos == variant.get("variant_position")
+                for ref_pos, var_pos in zip(
+                    reference_positions,
+                    variant_positions
+                )
+            ):
+                return True
+            return (
+                effect.get("reference_position")
+                == variant.get("reference_position")
+                and effect.get("variant_position")
+                == variant.get("variant_position")
+            )
+        if variant_type == "insertion":
+            return (
+                effect.get("after_reference_position")
+                == variant.get("after_reference_position")
+                and effect.get("inserted_sequence")
+                == variant.get("inserted_sequence")
+            )
+        if variant_type == "deletion":
+            return (
+                effect.get("reference_start")
+                == variant.get("reference_start")
+                and effect.get("reference_end")
+                == variant.get("reference_end")
+                and effect.get("deleted_sequence")
+                == variant.get("deleted_sequence")
+            )
+        return False
+    report_items = []
+    for variant in variants:
+        matching_effect = next(
+            (
+                effect
+                for effect in effects
+                if effect_matches_variant(effect, variant)
+            ),
+            {}
+        )
+        report_items.append((variant, matching_effect))
+    if not report_items:
+        report_items.append((None, None))
     with output_path.open(
         "w",
         newline="",
@@ -335,7 +448,7 @@ def write_report_csv(
             fieldnames=REPORT_FIELDS
         )
         writer.writeheader()
-        for effect in effects:
+        for variant, effect in report_items:
             row = {
                 "reference_id": reference_id,
                 "variant_id": variant_id,
@@ -361,12 +474,27 @@ def write_report_csv(
                 "effect_counts": effect_counts_text,
                 "notes": " | ".join(effect_report["notes"])
             }
-            row.update(effect)
-            if isinstance(row.get("reference_positions"), list):
-                row["reference_positions"] = "; ".join(
-                    map(str, row["reference_positions"])
-                )
-            writer.writerow(row)
+            if variant is None:
+                row["variant_type"] = "none"
+                row["effect"] = "no_change"
+            else:
+                row.update({
+                    key: value
+                    for key, value in variant.items()
+                    if key != "type"
+                })
+                row["variant_type"] = variant["type"]
+            if effect:
+                row.update(effect)
+            if variant is not None:
+                row["variant_type"] = variant["type"]
+            for key, value in list(row.items()):
+                if isinstance(value, list):
+                    row[key] = "; ".join(map(str, value))
+            writer.writerow({
+                field: row.get(field, "")
+                for field in REPORT_FIELDS
+            })
     return output_path
 
 

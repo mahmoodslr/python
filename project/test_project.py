@@ -348,3 +348,95 @@ def test_write_report_csv(tmp_path):
     assert rows[0]["reference_positions"] == "5"
     assert rows[0]["reference_protein"] == "MEPW"
     assert rows[0]["variant_protein"] == "MVPW"
+
+
+def test_substitution_before_insertion_is_classified():
+    reference = "ATGGAACCTTGG"
+    variant = "ATGGTACCTTGGA"
+    variants = [
+        {
+            "type": "substitution",
+            "reference_position": 5,
+            "variant_position": 5,
+            "reference_base": "A",
+            "variant_base": "T",
+        },
+        {
+            "type": "insertion",
+            "after_reference_position": 12,
+            "variant_start": 13,
+            "variant_end": 13,
+            "inserted_sequence": "A",
+        },
+    ]
+    report = classify_effects(reference, variant, variants)
+    substitution = next(
+        effect
+        for effect in report["effects"]
+        if effect["variant_type"] == "substitution"
+    )
+    assert substitution["effect"] == "missense"
+
+
+def test_substitution_during_frameshift_requires_context():
+    reference = "ATGGAACCTTGG"
+    variant = "ATGAGTACCTTGG"
+    variants = [
+        {
+            "type": "insertion",
+            "after_reference_position": 3,
+            "variant_start": 4,
+            "variant_end": 4,
+            "inserted_sequence": "A",
+        },
+        {
+            "type": "substitution",
+            "reference_position": 5,
+            "variant_position": 6,
+            "reference_base": "A",
+            "variant_base": "T",
+        },
+    ]
+    report = classify_effects(reference, variant, variants)
+    substitution = next(
+        effect
+        for effect in report["effects"]
+        if effect["variant_type"] == "substitution"
+    )
+    assert substitution["effect"] == "requires_contextual_analysis"
+
+
+def test_compensating_indels_restore_frame_phase():
+    reference = "ATGGAACCTTGG"
+    variant = "ATGAGAACTTGG"
+    variants = [
+        {
+            "type": "insertion",
+            "after_reference_position": 3,
+            "variant_start": 4,
+            "variant_end": 4,
+            "inserted_sequence": "A",
+        },
+        {
+            "type": "deletion",
+            "reference_start": 7,
+            "reference_end": 7,
+            "before_variant_position": 6,
+            "deleted_sequence": "C",
+        },
+    ]
+    report = classify_effects(reference, variant, variants)
+    insertion = next(
+        effect
+        for effect in report["effects"]
+        if effect["variant_type"] == "insertion"
+    )
+    deletion = next(
+        effect
+        for effect in report["effects"]
+        if effect["variant_type"] == "deletion"
+    )
+    assert insertion["frame_phase_after_event"] == 1
+    assert deletion["frame_phase_after_event"] == 0
+    assert deletion["frame_restored_after_event"] is True
+    assert report["net_frame_phase_preserved"] is True
