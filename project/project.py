@@ -375,7 +375,7 @@ def needleman_wunsch(
     variant,
     match_score=1,
     mismatch_score=-1,
-    gap_score=-1
+    gap_score=-2
 ):
     if not isinstance(reference, str) or not isinstance(variant, str):
         raise TypeError("Sequences must be strings.")

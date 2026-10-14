@@ -3,6 +3,53 @@ from project import load_fasta, validate_dna, needleman_wunsch, detect_variants,
 import csv
 
 
+def test_two_substitutions_are_not_misclassified_as_indels():
+    aligned_reference, aligned_variant, score = needleman_wunsch(
+        "ACGT",
+        "AGCT"
+    )
+    assert "-" not in aligned_reference
+    assert "-" not in aligned_variant
+    variants = detect_variants(aligned_reference, aligned_variant)
+    assert [variant["type"] for variant in variants] == [
+        "substitution",
+        "substitution"
+    ]
+    assert [
+        (
+            variant["reference_position"],
+            variant["reference_base"],
+            variant["variant_base"]
+        )
+        for variant in variants
+    ] == [
+        (2, "C", "G"),
+        (3, "G", "C")
+    ]
+
+
+def test_single_nucleotide_insertion_is_still_detected():
+    aligned_reference, aligned_variant, score = needleman_wunsch(
+        "ACGT",
+        "ACAGT"
+    )
+    variants = detect_variants(aligned_reference, aligned_variant)
+    assert len(variants) == 1
+    assert variants[0]["type"] == "insertion"
+    assert variants[0]["inserted_sequence"] == "A"
+
+
+def test_single_nucleotide_deletion_is_still_detected():
+    aligned_reference, aligned_variant, score = needleman_wunsch(
+        "ACAGT",
+        "ACGT"
+    )
+    variants = detect_variants(aligned_reference, aligned_variant)
+    assert len(variants) == 1
+    assert variants[0]["type"] == "deletion"
+    assert variants[0]["deleted_sequence"] == "A"
+
+
 def test_validate_dna_accepts_canonical_bases():
     assert validate_dna("atgc") == "ATGC"
 
