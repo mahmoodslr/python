@@ -12,12 +12,7 @@ DATA_FILE = BASE_DIR / "data" / "sequence.fasta"
 REPORT_DIR = BASE_DIR / "reports"
 
 
-# -------------------------
-# Stage 1: Basic analysis
-# -------------------------
-
 def read_sequence(file_path=DATA_FILE):
-    """Read a single DNA sequence from a FASTA file."""
     with open(file_path, "r", encoding="utf-8") as file:
         lines = file.readlines()
     title = None
@@ -43,12 +38,10 @@ def read_sequence(file_path=DATA_FILE):
 
 
 def clean_sequence(sequence):
-    """Normalize a DNA sequence."""
     return "".join(sequence.split()).upper()
 
 
 def validate_sequence(sequence):
-    """Check whether all characters are valid DNA nucleotides."""
     return bool(sequence) and set(sequence) <= NUCLEOTIDES
 
 
@@ -66,43 +59,25 @@ def count_nucleotides(sequence):
 def calculate_gc_content(sequence):
     if not sequence:
         return 0.0
-    return (
-        (sequence.count("G") + sequence.count("C"))
-        / len(sequence)
-        * 100
-    )
+    return ((sequence.count("G") + sequence.count("C")) / len(sequence)* 100)
 
 
 def calculate_at_content(sequence):
     if not sequence:
         return 0.0
-    return (
-        (sequence.count("A") + sequence.count("T"))
-        / len(sequence)
-        * 100
-    )
+    return ( (sequence.count("A") + sequence.count("T"))/ len(sequence) * 100)
 
-
-# -------------------------
-# Stage 2: Biological analysis
-# -------------------------
 
 def get_complement(sequence):
-    """Return the complementary DNA strand."""
     complement_table = str.maketrans("ATGC", "TACG")
     return sequence.translate(complement_table)
 
 
 def get_reverse_complement(sequence):
-    """Return the reverse complement of a DNA sequence."""
     return get_complement(sequence)[::-1]
 
 
 def get_reading_frames(sequence):
-    """
-    Return six reading frames:
-    three forward frames and three reverse-strand frames.
-    """
     reverse_sequence = get_reverse_complement(sequence)
     frames = {}
     for strand, dna in (
@@ -111,20 +86,11 @@ def get_reading_frames(sequence):
     ):
         for offset in range(3):
             frame_name = f"{strand}{offset + 1}"
-            frames[frame_name] = [
-                dna[i:i + 3]
-                for i in range(offset, len(dna) - 2, 3)
-            ]
+            frames[frame_name] = [dna[i:i + 3] for i in range(offset, len(dna) - 2, 3)]
     return frames
 
 
 def find_codons(sequence):
-    """
-    Find start and stop codons in all six reading frames.
-
-    Coordinates are 1-based and refer to the original
-    DNA sequence, including for the reverse strand.
-    """
     results = []
     length = len(sequence)
     for frame_name, codons in get_reading_frames(sequence).items():
@@ -154,13 +120,6 @@ def find_codons(sequence):
 
 
 def find_orfs(sequence):
-    """
-    Find candidate ORFs in all six reading frames.
-
-    Each start codon is paired with the first downstream
-    in-frame stop codon. Coordinates are 1-based and
-    refer to the original sequence.
-    """
     orfs = []
     length = len(sequence)
     for frame_name, codons in get_reading_frames(sequence).items():
@@ -192,18 +151,11 @@ def find_orfs(sequence):
                             codons[start_index:index + 1]
                         ),
                     })
-                # A stop codon closes ORFs started earlier
-                # in this same reading frame.
                 start_indices = []
     return orfs
 
 
 def find_pattern(sequence, pattern):
-    """
-    Find all occurrences of a DNA pattern.
-    Overlapping matches are included.
-    Return 1-based starting positions.
-    """
     pattern = clean_sequence(pattern)
     if not pattern or not set(pattern) <= NUCLEOTIDES:
         raise ValueError("Pattern must contain only A, T, G and C.")
@@ -218,15 +170,7 @@ def find_pattern(sequence, pattern):
     return positions
 
 
-def save_csv_report(
-    title,
-    sequence,
-    codons,
-    orfs,
-    pattern="",
-    pattern_positions=None,
-):
-    """Save a summary of the DNA analysis to a CSV file."""
+def save_csv_report(title, sequence, codons, orfs, pattern="", pattern_positions=None):
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     counts = count_nucleotides(sequence)
     start_count = sum(
@@ -275,7 +219,6 @@ def save_csv_report(
 
 
 def plot_nucleotide_counts(sequence):
-    """Create a bar chart of nucleotide counts."""
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     counts = count_nucleotides(sequence)
     nucleotides = list(counts.keys())
@@ -293,7 +236,6 @@ def plot_nucleotide_counts(sequence):
 
 
 def plot_gc_at_content(sequence):
-    """Create a bar chart of GC and AT content."""
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     gc_content = calculate_gc_content(sequence)
     at_content = calculate_at_content(sequence)
@@ -310,10 +252,6 @@ def plot_gc_at_content(sequence):
     plt.close()
     return output_file
 
-
-# -------------------------
-# Main program
-# -------------------------
 
 def main():
     try:
